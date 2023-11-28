@@ -39,6 +39,9 @@ where
                     let instr = self.gen_expr(expr.clone())?;
                     self.instrs.push(instr)
                 }
+                AsIr::Let(ref let_) => {
+                    tilog::info!("Generating instructions: {:?}", let_);
+                }
             }
         }
         Ok(())

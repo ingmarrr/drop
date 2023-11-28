@@ -23,7 +23,7 @@ pub fn repl() {
         let mut input = String::new();
         std::io::stdin().read_line(&mut input).unwrap();
 
-        let mut lexer = Lex::new("", input.as_bytes(), StdoutDiagnoster {});
+        let lexer = Lex::new("", input.as_bytes(), StdoutDiagnoster {});
         let toks = lexer.lex();
         let mut parser = Syn::new(toks, StdoutDiagnoster {});
         let ast = parser.parse_all();

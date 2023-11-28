@@ -3,6 +3,14 @@ use crate::tok::TokKind;
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum AsIr {
     Expr(Expr),
+    Let(Let),
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Let {
+    pub name: String,
+    pub ty: Option<String>,
+    pub expr: Box<Expr>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -67,3 +75,18 @@ pub enum AstLit {
 //         }
 //     }
 // }
+
+pub enum Partial {
+    Initiator(Initiator),
+    Name(String),
+    TypeAssign(),
+}
+
+pub enum Initiator {
+    Let,
+    Const,
+    Mut,
+    Fn,
+    Struct,
+    Type,
+}

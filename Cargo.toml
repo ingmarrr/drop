@@ -13,5 +13,7 @@ clap = { version = "4.4.8", features = ["derive", "env"] }
 termion = "2.0.3"
 thiserror = "1.0.50"
 
+# phf = { version = "0.11.2", default-features = false, features = ["macros"] }
+
 tilog = { git = "https://github.com/ingmarrr/tilog", branch = "main" }
 smallvec = { git = "https://github.com/servo/rust-smallvec", branch = "v2" }

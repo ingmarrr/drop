@@ -8,6 +8,7 @@ pub mod repl;
 pub mod run;
 pub mod syn;
 pub mod tok;
+pub mod tree;
 
 use std::io::Write;
 
@@ -26,7 +27,7 @@ pub fn assemble(name: &str) -> std::io::Result<std::process::ExitStatus> {
 
 pub fn xrun() -> std::io::Result<std::process::Output> {
     std::process::Command::new("xcrun")
-        .args(&["-sdk", "macosx", "--show-sdk-path"])
+        .args(["-sdk", "macosx", "--show-sdk-path"])
         .output()
 }
 
@@ -36,7 +37,7 @@ pub fn link(name: &str) -> std::io::Result<std::process::ExitStatus> {
         .trim_end()
         .to_string();
     std::process::Command::new("ld")
-        .args(&[
+        .args([
             "-e",
             "_main",
             "-l",
@@ -44,7 +45,7 @@ pub fn link(name: &str) -> std::io::Result<std::process::ExitStatus> {
             "-syslibroot",
             &syslibroot,
             "-o",
-            &name,
+            name,
             &format!("{}.o", name),
         ])
         .spawn()
@@ -62,14 +63,14 @@ pub fn execute(name: &str) -> std::io::Result<std::process::ExitStatus> {
         return Ok(ld_status);
     }
 
-    std::process::Command::new(&format!("./{}", name))
+    std::process::Command::new(format!("./{}", name))
         .spawn()
         .expect("Failed to run './a.out'")
         .wait()
 }
 
 pub fn save(name: &str, content: &str) -> std::io::Result<()> {
-    let mut file = std::fs::File::create(&format!("{}.s", name))?;
+    let mut file = std::fs::File::create(format!("{}.s", name))?;
     file.write_all(content.as_bytes())?;
     Ok(())
 }

@@ -2,13 +2,10 @@ use crate::tok;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum LexErr {
-    #[error("Invalid character: {0}")]
+    #[error("Lex Error: Invalid character: {0}")]
     InvalidChar(char),
 
-    #[error("Invalid token: {0}")]
-    InvalidToken(String),
-
-    #[error("Integer will overflow: {0}")]
+    #[error("Lex Error: Integer will overflow: {0}")]
     IntegerOverflow(String),
 
     #[error(transparent)]
@@ -22,14 +19,26 @@ pub enum LexErr {
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum SynErr {
-    #[error("Expected {0}, found {1}")]
+pub enum ParseErr {
+    #[error("Parse Error: Expected {0}, found {1}")]
     Expected(String, String),
 
-    #[error("Invalid Token: {0}")]
+    #[error("Parse Error: Invalid Token: {0}")]
     InvalidToken(String),
 
-    #[error("Unsigned integer cannot be negative: {0}")]
+    #[error(transparent)]
+    LexErr(#[from] LexErr),
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum SynErr {
+    #[error("Syntax Error: Expected {0}, found {1}")]
+    Expected(String, String),
+
+    #[error("Syntax Error: Invalid Token: {0}")]
+    InvalidToken(String),
+
+    #[error("Syntax Error: Unsigned integer cannot be negative: {0}")]
     UnsignedCannotBeNegative(String),
 
     #[error(transparent)]

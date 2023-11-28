@@ -1,34 +1,204 @@
+pub type TokIx = usize;
+
+/// The token buffer will be built from the lexer.
+/// It will contain the values for all literals
+/// (integers, floats, strings) as well as the
+/// identifiers.
+///
+/// This token buffer can then be passed to the different
+/// stages of the compiler (parsing, semantix analysis, codegen).
+///
+/// It has an api for the caller to get information for any token
+/// via the `TokIx`, which is an index into its internal buffer
+/// of token infos, which then has a pointer to the corresponding
+/// array (integer, float, string, identifier) array of the token.
+/// If the token does not need to have an (at compile time) unknown
+/// value, like symbols and keywords, since we store its type in
+/// the info, we already know its value as well.
+#[derive(Debug)]
+pub struct TokBuf<'a> {
+    pub file: Option<&'a str>,
+    pub src: &'a [u8],
+    pub toks: Vec<TokIx>,
+    pub infos: Vec<Tok<'a>>,
+    pub ints: Vec<u64>,
+    pub reals: Vec<f64>,
+    pub strs: Vec<&'a str>,
+    pub idents: Vec<&'a str>,
+}
+
+impl<'a> TokBuf<'a> {
+    pub fn new(file: Option<&'a str>, src: &'a [u8]) -> TokBuf<'a> {
+        TokBuf::<'a> {
+            file,
+            src,
+            toks: Vec::new(),
+            infos: Vec::new(),
+            ints: Vec::new(),
+            reals: Vec::new(),
+            strs: Vec::new(),
+            idents: Vec::new(),
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = TokIx> + '_ {
+        self.toks.iter().copied()
+    }
+
+    pub fn push(&mut self, kind: TokKind, src: Source<'a>, val: Option<Val<'a>>) -> TokIx {
+        let ix = self.infos.len();
+        let ptr = val.map(|lit| match lit {
+            Val::Ident(val) => self.push_ident(val),
+            Val::String(val) => self.push_str(val),
+            Val::Char(val) => self.push_int(val as u64),
+            Val::Uint(val) => self.push_int(val),
+            Val::Real(val) => self.push_real(val),
+        });
+        let tok = Tok { kind, src, ptr };
+        self.infos.push(tok);
+        self.toks.push(ix);
+        ix
+    }
+
+    pub fn get(&self, ix: usize) -> Option<TokIx> {
+        self.toks.get(ix).copied()
+    }
+
+    pub fn len(&self) -> usize {
+        self.toks.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.toks.is_empty()
+    }
+
+    pub fn info_of(&self, ix: TokIx) -> Tok<'a> {
+        self.infos.get(ix).copied().unwrap()
+    }
+
+    pub fn try_info_of(&self, ix: TokIx) -> Option<Tok<'a>> {
+        self.infos.get(ix).copied()
+    }
+
+    pub fn kind_of(&self, ix: TokIx) -> TokKind {
+        self.infos.get(ix).map(|tok| tok.kind).unwrap()
+    }
+
+    pub fn try_kind_of(&self, ix: TokIx) -> Option<TokKind> {
+        self.infos.get(ix).map(|tok| tok.kind)
+    }
+
+    pub fn src_of(&self, ix: TokIx) -> Source<'a> {
+        self.infos.get(ix).map(|tok| tok.src).unwrap()
+    }
+
+    pub fn try_src_of(&self, ix: TokIx) -> Option<Source<'a>> {
+        self.infos.get(ix).map(|tok| tok.src)
+    }
+
+    #[rustfmt::skip]
+    pub fn val_of(&self, ix: TokIx) -> Result<Val<'a>, String> {
+        let tok = self.info_of(ix);
+        println!("tok: {:?}", tok);
+        match tok.ptr {
+            Some(ptr) => match tok.kind {
+                TokKind::IntLit => Ok(Val::Uint(self.ints[ptr])),
+                TokKind::RealLit => Ok(Val::Real(self.reals[ptr])),
+                TokKind::CharLit => Ok(Val::Char(self.ints[ptr] as u8)),
+                TokKind::StringLit => Ok(Val::String(self.strs[ptr])),
+                TokKind::Ident => Ok(Val::Ident(self.idents[ptr])),
+                _ => unreachable!(),
+            },
+            None => Err(tok.kind.to_string())
+        }
+    }
+
+    pub fn try_val_of(&self, ix: TokIx) -> Option<Val<'a>> {
+        self.infos.get(ix).and_then(|tok| match tok.ptr {
+            Some(ptr) => match tok.kind {
+                TokKind::IntLit => Some(Val::Uint(self.ints[ptr])),
+                TokKind::RealLit => Some(Val::Real(self.reals[ptr])),
+                TokKind::CharLit => Some(Val::Char(self.ints[ptr] as u8)),
+                TokKind::StringLit => Some(Val::String(self.strs[ptr])),
+                _ => None,
+            },
+            None => None,
+        })
+    }
+
+    pub fn str_of(&self, ix: TokIx) -> &'a str {
+        let info = self.info_of(ix);
+        let src_buf = &self.src[info.src.pos..info.src.pos + info.src.len];
+        std::str::from_utf8(src_buf).unwrap()
+    }
+
+    fn push_int(&mut self, val: u64) -> usize {
+        self.ints.push(val);
+        self.ints.len() - 1
+    }
+
+    fn push_real(&mut self, val: f64) -> usize {
+        self.reals.push(val);
+        self.reals.len() - 1
+    }
+
+    fn push_str(&mut self, val: &'a str) -> usize {
+        self.strs.push(val);
+        self.strs.len() - 1
+    }
+
+    fn push_ident(&mut self, val: &'a str) -> usize {
+        self.idents.push(val);
+        self.idents.len() - 1
+    }
+}
+
 #[rustfmt::skip]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum TokKind {
     Ident,
-    // Number Types
-    LitInt,
-    LitReal,
-    LitChar,
-    LitString,
+    // Literals
+    IntLit,     // Integer: 123
+    RealLit,    // Real: 123.456
+    CharLit,    // Character: 'a'
+    StringLit,  // String: "Hello World"
+    SignedIntTypeLit, // Integer Type: i8, i16, i32, i64, isize
+    UnsignedIntTypeLit, // Integer Type: u8, u16, u32, u64, usize
+    FloatTypeLit, // Real Type: f32, f64
+
 
     // Keywords
-    U8,
-    U16,
-    U32,
-    U64,
-    I8,
-    I16,
-    I32,
-    I64,
+    Let,        // let
+    Type,       // type
+    Func,         // fn
 
     // Operators
-    Add, // +
-    Sub, // -
-    Mul, // *
-    Div, // /
+    Add,   // +
+    Sub,   // -
+    Mul,   // *
+    Div,   // /
+    Eq,    // =
+
+    // Double Operators
+    Deq,   // ==
+    Neq,   // !=
+
+    // Openers
+    LPar,       // (
+    LBrace,     // {
+    LBrack,     // [
+
+    // Closers
+    RPar,       // )
+    RBrace,     // }
+    RBrack,     // ]
 
     // Terminators/Seperators
-    Semi, // ;
-    Comma,// ,
+    Semi,  // ;
+    Comma, // ,
+    Colon, // :
 
-    // Keywords
+    Sof,
     Eof,
     Invalid,
 }
@@ -43,6 +213,14 @@ impl From<u8> for TokKind {
             b'\0' => TokKind::Eof,
             b';' => TokKind::Semi,
             b',' => TokKind::Comma,
+            b':' => TokKind::Colon,
+            b'=' => TokKind::Eq,
+            b'(' => TokKind::LPar,
+            b')' => TokKind::RPar,
+            b'{' => TokKind::LBrace,
+            b'}' => TokKind::RBrace,
+            b'[' => TokKind::LBrack,
+            b']' => TokKind::RBrack,
             _ => TokKind::Invalid,
         }
     }
@@ -79,6 +257,16 @@ pub struct Source<'a> {
 }
 
 impl<'a> Source<'a> {
+    pub fn sof(file: &'a str) -> Self {
+        Self {
+            file,
+            pos: 0,
+            line: 0,
+            col: 0,
+            len: 0,
+        }
+    }
+
     pub fn eof() -> Self {
         Self {
             file: "",
@@ -129,7 +317,7 @@ impl<'a> Source<'a> {
 pub struct Tok<'a> {
     pub kind: TokKind,
     pub src: Source<'a>,
-    pub val: Lit<'a>,
+    pub ptr: Option<usize>, // pub val: Lit<'a>,
 }
 
 impl std::fmt::Display for TokKind {
@@ -138,33 +326,44 @@ impl std::fmt::Display for TokKind {
             TokKind::Ident => write!(f, "Ident"),
 
             // Number Types
-            TokKind::LitInt => write!(f, "Literal Int"),
-            TokKind::LitReal => write!(f, "Literal Real"),
-            TokKind::LitChar => write!(f, "Literal Char"),
-            TokKind::LitString => write!(f, "Literal String"),
+            TokKind::IntLit => write!(f, "IntLiteral"),
+            TokKind::RealLit => write!(f, "RealLiteral"),
+            TokKind::CharLit => write!(f, "CharLiteral"),
+            TokKind::StringLit => write!(f, "StringLiteral"),
+            TokKind::SignedIntTypeLit => write!(f, "SignedIntTypeLiteral"),
+            TokKind::UnsignedIntTypeLit => write!(f, "UnsignedIntTypeLiteral"),
+            TokKind::FloatTypeLit => write!(f, "FloatTypeLiteral"),
 
             // Keywords
-            TokKind::U8 => write!(f, "U8"),
-            TokKind::U16 => write!(f, "U16"),
-            TokKind::U32 => write!(f, "U32"),
-            TokKind::U64 => write!(f, "U64"),
-            TokKind::I8 => write!(f, "I8"),
-            TokKind::I16 => write!(f, "I16"),
-            TokKind::I32 => write!(f, "I32"),
-            TokKind::I64 => write!(f, "I64"),
+            TokKind::Let => write!(f, "Let"),
+            TokKind::Type => write!(f, "Type"),
+            TokKind::Func => write!(f, "Function"),
 
             // Operators
             TokKind::Add => write!(f, "Add"),
             TokKind::Sub => write!(f, "Sub"),
             TokKind::Mul => write!(f, "Mul"),
             TokKind::Div => write!(f, "Div"),
+            TokKind::Eq => write!(f, "Equals"),
+
+            TokKind::Deq => write!(f, "DoubleEquals"),
+            TokKind::Neq => write!(f, "NotEquals"),
 
             // Terminators/Seperators
             TokKind::Semi => write!(f, "Semi"),
             TokKind::Comma => write!(f, "Comma"),
+            TokKind::Colon => write!(f, "Colon"),
 
-            TokKind::Eof => write!(f, "Eof"),
+            TokKind::Sof => write!(f, "StartOfFile"),
+            TokKind::Eof => write!(f, "EndOfFile"),
             TokKind::Invalid => write!(f, "Invalid"),
+
+            TokKind::LPar => write!(f, "LeftParenthesis"),
+            TokKind::LBrace => write!(f, "LeftBrace"),
+            TokKind::LBrack => write!(f, "LeftBracket"),
+            TokKind::RPar => write!(f, "RightParenthesis"),
+            TokKind::RBrace => write!(f, "RightBrace"),
+            TokKind::RBrack => write!(f, "RightBracket"),
         }
     }
 }
@@ -172,33 +371,19 @@ impl std::fmt::Display for TokKind {
 impl From<&str> for TokKind {
     fn from(value: &str) -> Self {
         match value {
-            "u8" => TokKind::U8,
-            "u16" => TokKind::U16,
-            "u32" => TokKind::U32,
-            "u64" => TokKind::U64,
-            "i8" => TokKind::I8,
-            "i16" => TokKind::I16,
-            "i32" => TokKind::I32,
-            "i64" => TokKind::I64,
+            "let" => TokKind::Let,
+            "type" => TokKind::Type,
+            "func" => TokKind::Func,
             _ => TokKind::Ident,
         }
     }
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum Lit<'a> {
+pub enum Val<'a> {
+    Ident(&'a str),
     String(&'a str),
     Char(u8),
-    // U8(u8),
-    // U16(u16),
-    // U32(u32),
     Uint(u64),
-    // I8(i8),
-    // I16(i16),
-    // I32(i32),
-    // I64(i64),
-    Bin(u64),
-    Oct(u64),
-    Hex(u64),
     Real(f64),
 }

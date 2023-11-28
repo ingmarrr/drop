@@ -1,9 +1,9 @@
 use core::f64;
 
 use crate::{
-    diagnostics::{Diagnoster, Diagnostic, DiagnosticKind, StdoutDiagnoster},
+    diagnostics::{Diagnoster, Diagnostic, DiagnosticKind},
     err::{LexErr, Trace},
-    tok::{Lit, Source, Tok, TokKind},
+    tok::{Source, TokBuf, TokIx, TokKind, Val},
 };
 
 pub struct Lex<'a, D>
@@ -29,6 +29,22 @@ where
     /// The lexer and parser will add errors/warnings/notes
     /// to the diagnostics.
     pub diag: D,
+    /// The token buffer will be built from the lexer.
+    /// It will contain the values for all literals
+    /// (integers, floats, strings) as well as the
+    /// identifiers.
+    ///
+    /// This token buffer can then be passed to the different
+    /// stages of the compiler (parsing, semantix analysis, codegen).
+    ///
+    /// It has an api for the caller to get information for any token
+    /// via the `TokIx`, which is an index into its internal buffer
+    /// of token infos, which then has a pointer to the corresponding
+    /// array (integer, float, string, identifier) array of the token.
+    /// If the token does not need to have an (at compile time) unknown
+    /// value, like symbols and keywords, since we store its type in
+    /// the info, we already know its value as well.
+    pub buf: TokBuf<'a>,
 }
 
 impl<'a, D> Lex<'a, D>
@@ -44,14 +60,13 @@ where
             start: 0,
             file,
             diag,
+            buf: TokBuf::new(if file.is_empty() { None } else { Some(file) }, src),
         }
     }
 
-    pub fn lex(&mut self) -> Vec<Tok<'a>> {
-        if self.src.is_empty() {
-            return Vec::new();
-        }
-        let mut toks = Vec::new();
+    pub fn lex(mut self) -> TokBuf<'a> {
+        self.buf.push(TokKind::Sof, Source::sof(self.file), None);
+
         loop {
             let tok = match self.lx_tok() {
                 Ok(tok) => tok,
@@ -65,23 +80,23 @@ where
                 }
             };
 
-            if tok.kind == TokKind::Eof {
+            let kind = self.buf.kind_of(tok);
+            if kind == TokKind::Eof {
                 break;
-            } else if tok.kind == TokKind::Invalid {
-                tilog::error!("Invalid token: {:?}", tok)
+            } else if kind == TokKind::Invalid {
+                tilog::info!("Invalid token: {:?}", self.buf.str_of(tok))
                 // self.diag.report(Diagnostic {
                 //     kind: DiagnosticKind::Error,
                 //     msg: LexErr::InvalidToken(self.str_of(&tok.src).to_owned()).to_string(),
                 //     src: tok.src,
                 // });
             }
-            toks.push(tok);
         }
 
-        toks
+        self.buf
     }
 
-    pub fn lx_tok(&mut self) -> Result<Tok<'a>, Trace<'a, LexErr>> {
+    pub fn lx_tok(&mut self) -> Result<TokIx, Trace<'a, LexErr>> {
         self.consume_ws();
 
         let tok = self.consume().unwrap_or(b'\0');
@@ -95,15 +110,15 @@ where
             },
             b'1'..=b'9' => self.lx_int(),
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.lx_ident(),
-            ch => Ok(Tok::<'a> {
-                kind: TokKind::from(ch),
-                src: self.src(),
-                val: Lit::Char(ch),
-            }),
+
+            ch => {
+                let src = self.src();
+                Ok(self.buf.push(TokKind::from(ch), src, Some(Val::Char(ch))))
+            }
         }
     }
 
-    fn lx_prefixed_int(&mut self, prefix: u8) -> Result<Tok<'a>, Trace<'a, LexErr>> {
+    fn lx_prefixed_int(&mut self, prefix: u8) -> Result<TokIx, Trace<'a, LexErr>> {
         let radix = match prefix {
             b'b' | b'B' => 2,
             b'o' | b'O' => 8,
@@ -115,28 +130,15 @@ where
         let src = self.src();
         let val = &self.str_of(&src)[2..];
 
-        let uval = match u64::from_str_radix(val, radix) {
-            Ok(val) => val,
-            Err(err) => {
-                return Err(Trace {
-                    src,
-                    err: LexErr::IntegerParseErr(err),
-                })
-            }
-        };
-        Ok(Tok::<'a> {
-            kind: TokKind::LitInt,
-            val: match prefix {
-                b'b' | b'B' => Lit::Bin(uval),
-                b'o' | b'O' => Lit::Oct(uval),
-                b'x' | b'X' => Lit::Hex(uval),
-                _ => unreachable!(),
-            },
+        let uval = u64::from_str_radix(val, radix).map_err(|err| Trace {
             src,
-        })
+            err: LexErr::IntegerParseErr(err),
+        })?;
+
+        Ok(self.buf.push(TokKind::IntLit, src, Some(Val::Uint(uval))))
     }
 
-    fn lx_int(&mut self) -> Result<Tok<'a>, Trace<'a, LexErr>> {
+    fn lx_int(&mut self) -> Result<TokIx, Trace<'a, LexErr>> {
         self.consume_while(|c| c.is_ascii_digit());
         let mut is_real = if self.consume_if(b'.').is_some() {
             self.consume_while(|c| c.is_ascii_digit());
@@ -153,12 +155,9 @@ where
 
         let src = self.src();
         if is_real {
+            tilog::info!("real: {}", self.str_of(&src));
             match self.str_of(&src).parse::<f64>() {
-                Ok(val) => Ok(Tok::<'a> {
-                    kind: TokKind::LitReal,
-                    src,
-                    val: Lit::Real(val),
-                }),
+                Ok(val) => Ok(self.buf.push(TokKind::RealLit, src, Some(Val::Real(val)))),
                 Err(err) => Err(Trace {
                     src,
                     err: LexErr::FloatParseErr(err),
@@ -166,11 +165,7 @@ where
             }
         } else {
             match self.str_of(&src).parse::<u64>() {
-                Ok(val) => Ok(Tok::<'a> {
-                    kind: TokKind::LitInt,
-                    src,
-                    val: Lit::Uint(val),
-                }),
+                Ok(val) => Ok(self.buf.push(TokKind::IntLit, src, Some(Val::Uint(val)))),
                 Err(err) => Err(Trace {
                     src,
                     err: LexErr::IntegerParseErr(err),
@@ -179,17 +174,11 @@ where
         }
     }
 
-    fn lx_ident(&mut self) -> Result<Tok<'a>, Trace<'a, LexErr>> {
+    fn lx_ident(&mut self) -> Result<TokIx, Trace<'a, LexErr>> {
         self.consume_while(|c| c.is_ascii_alphanumeric() || c == b'_');
         let src = self.src();
         let st = self.str_of(&src);
-        let val = Lit::String(st);
-
-        Ok(Tok::<'a> {
-            kind: TokKind::from(st),
-            src,
-            val,
-        })
+        Ok(self.buf.push(TokKind::from(st), src, Some(Val::Ident(st))))
     }
 
     fn peek(&self) -> Option<u8> {
@@ -305,19 +294,6 @@ where
     }
 }
 
-impl<'a> Iterator for Lex<'a, StdoutDiagnoster> {
-    type Item = Tok<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let tok = self.lx_tok().ok()?;
-        if tok.kind == TokKind::Eof {
-            None
-        } else {
-            Some(tok)
-        }
-    }
-}
-
 #[cfg(test)]
 mod lex_public_api_tests {
     use crate::diagnostics::StdoutDiagnoster;
@@ -341,11 +317,22 @@ mod lex_public_api_tests {
     fn test_ident() {
         let src = r#"foo _foo foo_bar _ __ foo123 _123 _a1c_213klj"#;
         let diags = StdoutDiagnoster {};
-        let mut lx = Lex::new("", src.as_bytes(), diags);
-        let toks = lx.lex();
-        for tok in toks {
-            assert_eq!(tok.kind, TokKind::Ident);
+        let lx = Lex::new("", src.as_bytes(), diags);
+        let buf = lx.lex();
+        assert!(buf.infos.len() == 10);
+        assert!(buf.infos[0].kind == TokKind::Sof);
+        for i in 1..buf.infos.len() - 1 {
+            assert_eq!(buf.infos[i].kind, TokKind::Ident);
         }
+        assert!(buf.str_of(1) == "foo");
+        assert!(buf.str_of(2) == "_foo");
+        assert!(buf.str_of(3) == "foo_bar");
+        assert!(buf.str_of(4) == "_");
+        assert!(buf.str_of(5) == "__");
+        assert!(buf.str_of(6) == "foo123");
+        assert!(buf.str_of(7) == "_123");
+        assert!(buf.str_of(8) == "_a1c_213klj");
+        assert!(buf.infos[9].kind == TokKind::Eof)
     }
 
     #[test]
@@ -353,15 +340,17 @@ mod lex_public_api_tests {
         // Exhaustive, should catch if I add a new symbol
         let src = r#"+ - * / ; ,"#;
         let diags = StdoutDiagnoster {};
-        let mut lx = Lex::new("", src.as_bytes(), diags);
-        let toks = lx.lex();
-        assert!(toks.len() == 6);
-        assert_eq!(toks[0].kind, TokKind::Add);
-        assert_eq!(toks[1].kind, TokKind::Sub);
-        assert_eq!(toks[2].kind, TokKind::Mul);
-        assert_eq!(toks[3].kind, TokKind::Div);
-        assert_eq!(toks[4].kind, TokKind::Semi);
-        assert_eq!(toks[5].kind, TokKind::Comma);
+        let lx = Lex::new("", src.as_bytes(), diags);
+        let buf = lx.lex();
+        let toks = buf.infos;
+        assert!(toks.len() == 8);
+        assert_eq!(toks[1].kind, TokKind::Add);
+        assert_eq!(toks[2].kind, TokKind::Sub);
+        assert_eq!(toks[3].kind, TokKind::Mul);
+        assert_eq!(toks[4].kind, TokKind::Div);
+        assert_eq!(toks[5].kind, TokKind::Semi);
+        assert_eq!(toks[6].kind, TokKind::Comma);
+        assert_eq!(toks[7].kind, TokKind::Eof);
     }
 
     #[test]
@@ -385,44 +374,46 @@ mod lex_public_api_tests {
             1.23e-4 0.07e-4
         "#;
         let diags = StdoutDiagnoster {};
-        let mut lx = Lex::new("", src.as_bytes(), diags);
-        let toks = lx.lex();
-        for tok in toks.iter() {
-            tilog::info!("tok: {:?}", tok.val);
-        }
-        assert!(toks.len() == 26);
+        let lx = Lex::new("", src.as_bytes(), diags);
+        let buf = std::rc::Rc::new(lx.lex());
+        let toks = &buf.toks;
+        // println!("{:#?}", buf.infos);
+        assert!(toks.len() == 28);
 
         let expected = vec![
-            (TokKind::LitInt, Lit::Uint(123)),
-            (TokKind::LitInt, Lit::Uint(007)),
-            (TokKind::LitInt, Lit::Bin(0b1010)),
-            (TokKind::LitInt, Lit::Bin(0b1111)),
-            (TokKind::LitInt, Lit::Oct(0o123)),
-            (TokKind::LitInt, Lit::Oct(0o007)),
-            (TokKind::LitInt, Lit::Hex(0x123)),
-            (TokKind::LitInt, Lit::Hex(0x007)),
-            (TokKind::LitReal, Lit::Real(123.456)),
-            (TokKind::LitReal, Lit::Real(007.123)),
-            (TokKind::LitReal, Lit::Real(0.123)),
-            (TokKind::LitReal, Lit::Real(0.007)),
-            (TokKind::LitReal, Lit::Real(123.0)),
-            (TokKind::LitReal, Lit::Real(007.0)),
-            (TokKind::LitReal, Lit::Real(123e4)),
-            (TokKind::LitReal, Lit::Real(007e4)),
-            (TokKind::LitReal, Lit::Real(123e4)),
-            (TokKind::LitReal, Lit::Real(007e4)),
-            (TokKind::LitReal, Lit::Real(123e-4)),
-            (TokKind::LitReal, Lit::Real(007e-4)),
-            (TokKind::LitReal, Lit::Real(1.23e4)),
-            (TokKind::LitReal, Lit::Real(0.07e4)),
-            (TokKind::LitReal, Lit::Real(1.23e4)),
-            (TokKind::LitReal, Lit::Real(0.07e4)),
+            (TokKind::Sof, Val::String("Placeholder".into())),
+            (TokKind::IntLit, Val::Uint(123)),
+            (TokKind::IntLit, Val::Uint(007)),
+            (TokKind::IntLit, Val::Uint(0b1010)),
+            (TokKind::IntLit, Val::Uint(0b1111)),
+            (TokKind::IntLit, Val::Uint(0o123)),
+            (TokKind::IntLit, Val::Uint(0o007)),
+            (TokKind::IntLit, Val::Uint(0x123)),
+            (TokKind::IntLit, Val::Uint(0x007)),
+            (TokKind::RealLit, Val::Real(123.456)),
+            (TokKind::RealLit, Val::Real(007.123)),
+            (TokKind::RealLit, Val::Real(0.123)),
+            (TokKind::RealLit, Val::Real(0.007)),
+            (TokKind::RealLit, Val::Real(123.0)),
+            (TokKind::RealLit, Val::Real(007.0)),
+            (TokKind::RealLit, Val::Real(123e4)),
+            (TokKind::RealLit, Val::Real(007e4)),
+            (TokKind::RealLit, Val::Real(123e4)),
+            (TokKind::RealLit, Val::Real(007e4)),
+            (TokKind::RealLit, Val::Real(123e-4)),
+            (TokKind::RealLit, Val::Real(007e-4)),
+            (TokKind::RealLit, Val::Real(1.23e4)),
+            (TokKind::RealLit, Val::Real(0.07e4)),
+            (TokKind::RealLit, Val::Real(1.23e4)),
+            (TokKind::RealLit, Val::Real(0.07e4)),
         ];
 
-        for i in 0..expected.len() {
-            assert_eq!(toks[i].kind, expected[i].0);
-            assert_eq!(toks[i].val, expected[i].1);
+        for tok in 1..expected.len() {
+            assert_eq!(buf.kind_of(tok), expected[tok].0);
+            assert_eq!(buf.val_of(tok).unwrap(), expected[tok].1);
         }
+
+        assert_eq!(buf.kind_of(27), TokKind::Eof);
     }
 }
 
